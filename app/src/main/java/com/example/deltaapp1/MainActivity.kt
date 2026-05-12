@@ -158,7 +158,7 @@ class MainActivity : ComponentActivity() {
 fun saveImage(bitmap:Bitmap,context: Context){
     val directory = File(context.filesDir, "Collages_saved") //opens child named folder in the app's provate storage location
     if (!directory.exists()){
-        directory.mkdirs() // check is the folder/directory exists and if not, create one
+        directory.mkdirs() // check if the folder/directory exists and if not, create one
     }
     val file = File(directory, "Collage_${System.currentTimeMillis()}.png") //now parent is the directory and child is the name of collage file with currentTimeMillis() to make name unique
     val outputStream = FileOutputStream(file) //like a pipe to send out the info
@@ -365,6 +365,16 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                                 modifier = Modifier.weight(1f).fillMaxHeight(), viewMode = viewMode, bgColouri = bgColour
                             )
                         }
+                        editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                            OverlayText(details=item, onDragging = {dx,dy ->
+                                editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
+                                    it[index] = it[index].copy(
+                                        x= it[index].x+dx,
+                                        y= it[index].y+dy
+                                    )
+                                }
+                            })
+                        }
 
                     }
                 }
@@ -418,6 +428,16 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                                 }
                             }
                         }
+                    }
+                    editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                        OverlayText(details=item, onDragging = {dx,dy ->
+                            editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
+                                it[index] = it[index].copy(
+                                    x= it[index].x+dx,
+                                    y= it[index].y+dy
+                                )
+                            }
+                        })
                     }
                 }
 
@@ -489,6 +509,16 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                                     )
                                 }
                             }
+                        }
+                        editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                            OverlayText(details=item, onDragging = {dx,dy ->
+                                editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
+                                    it[index] = it[index].copy(
+                                        x= it[index].x+dx,
+                                        y= it[index].y+dy
+                                    )
+                                }
+                            })
                         }
 
                     }
@@ -569,20 +599,20 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                                 }
                             }
                         }
+                        editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                            OverlayText(details=item, onDragging = {dx,dy ->
+                                editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
+                                    it[index] = it[index].copy(
+                                        x= it[index].x+dx,
+                                        y= it[index].y+dy
+                                    )
+                                }
+                            })
+                        }
 
                     }
                 }
             }
-                editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                    OverlayText(details=item, onDragging = {dx,dy ->
-                        editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
-                            it[index] = it[index].copy(
-                                x= it[index].x+dx,
-                                y= it[index].y+dy
-                            )
-                        }
-                    })
-                }
             }
             Spacer(modifier = Modifier.height(20.dp))
             var intVal1 = editorViewModel.rounding.value.toInt()
