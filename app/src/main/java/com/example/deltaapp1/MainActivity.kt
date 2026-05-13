@@ -1,9 +1,10 @@
 package com.example.deltaapp1
-
+import androidx.compose.foundation.layout.BoxWithConstraints
 import android.content.ContentValues
 import android.content.Context
 import android.os.Bundle
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
@@ -29,8 +30,10 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.Icon
 import androidx.compose.foundation.border
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -53,6 +56,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -63,6 +67,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.setValue
@@ -75,6 +80,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation.width
@@ -84,11 +90,15 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import coil.compose.rememberAsyncImagePainter
+import coil.request.ImageRequest
 
 import com.example.deltaapp1.ui.theme.DeltaApp1Theme
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import kotlin.apply
 import kotlin.collections.plusAssign
 import kotlin.text.toInt
@@ -96,10 +106,17 @@ import kotlin.text.toInt
 enum class LayoutT {TWO_GRID,THREE_GRID,FOUR_GRID,FIVE_GRID}
 data class TextOverlayStuffs(
     val text: String,
-    val x: Float=50f,
-    val y: Float=80f,
+    val relativeX: Float=0.5f,
+    val relativeY: Float=0.5f,
     val textColor:Color = Color.White,
     val textFont: FontFamily = FontFamily.Default
+)
+data class ScrapPicStuffs(
+    val id: Uri,
+    val x:Float,
+    val y:Float,
+    val zoom:Float,
+    val rotate:Float
 )
 class EditorViewModel : ViewModel() { //inheriting from ViewModel class
     var spacing by mutableStateOf(4.dp)
@@ -112,13 +129,17 @@ class EditorViewModel : ViewModel() { //inheriting from ViewModel class
     //secondscreen function
     var currentBox by mutableStateOf<Int?>(null)
     var selectedPic by mutableStateOf<Int?>(null)
-    var currentPics by mutableStateOf(listOf<Int?>(null,null,null,null,null))
+    var currentPics by mutableStateOf(listOf<Int?>(null,null,null,null,null)) //drawable resources are integers generally
     var textOverlay by mutableStateOf<String>("")
     var listOfTextOvers by mutableStateOf(listOf<TextOverlayStuffs>())
     var displayOverlay by mutableStateOf(false)
     var showDone by mutableStateOf(false)
     var selectedStyle by mutableStateOf(FontFamily.Default)
     var selectedColor by mutableStateOf(Color.White)
+    //scrapbook
+    var scrapRounding by mutableStateOf(10.dp)
+    var scrapBg by mutableStateOf(Color.White)
+    var scrapPics by mutableStateOf(listOf<ScrapPicStuffs>())
 
 }
 class MainActivity : ComponentActivity() {
@@ -128,26 +149,34 @@ class MainActivity : ComponentActivity() {
         setContent {
             DeltaApp1Theme {
                 val navController =
-                    rememberNavController()
+                    rememberNavController() //an object to control navigation backstack, current route, etc.
                 val editorViewModel: EditorViewModel = viewModel() //created an object but also don't want duplicates using viewModel() which searches for one and equalizes to that
-                NavHost(
+                //searches for instance in ViewModels store and uses that if existing and if not creates one. So that the instance of viewmodel states can be shared independent of the composable
+                NavHost( //manages the screens and which screens are visible
                     navController = navController,
                     startDestination = "home"
-                ) {
+                ) { //call required function under each composable(route=" ")
                     composable("home") {
                         ScreenHome(
-                            navController=navController, selectedLayout=editorViewModel.selectedLayout, layoutSelection = {layout -> editorViewModel.selectedLayout = layout}, viewMode = editorViewModel.viewMode, changeView = { editorViewModel.viewMode = !editorViewModel.viewMode},bgColour = editorViewModel.bgColour, colorChange = {newcolor -> editorViewModel.bgColour = newcolor}
+                            navController=navController, selectedLayout=editorViewModel.selectedLayout, layoutSelection = {layout -> editorViewModel.selectedLayout = layout}, viewMode = editorViewModel.viewMode, changeView = { editorViewModel.viewMode = !editorViewModel.viewMode},bgColour = editorViewModel.bgColour,
+                            colorChange = {newcolor ->
+                                editorViewModel.bgColour = newcolor
+                                editorViewModel.scrapBg = newcolor
+                            }
                         )
                     }
                     composable("editor") {
                         SecondScreen(
                             selectedLayoutT =
-                                editorViewModel.selectedLayout!!,
+                                editorViewModel.selectedLayout!!, //!! guarantees that it is not null
                             navController =
                                 navController,
                             viewMode = editorViewModel.viewMode,
                             bgColour = editorViewModel.bgColour, colorChange = {newcolor -> editorViewModel.bgColour = newcolor}
                         )
+                    }
+                    composable("scrapbook"){
+                        ScrapbookScreen(editorViewModel.viewMode, navController)
                     }
                 }
             }
@@ -156,24 +185,25 @@ class MainActivity : ComponentActivity() {
 }
 
 fun saveImage(bitmap:Bitmap,context: Context){
-    val directory = File(context.filesDir, "Collages_saved") //opens child named folder in the app's provate storage location
+    val directory = File(context.filesDir, "Collages_saved") //creates a path object with child named folder in the app's private storage location
     if (!directory.exists()){
-        directory.mkdirs() // check if the folder/directory exists and if not, create one
+        directory.mkdirs() // check if the folder/directory exists and if not, make one
     }
     val file = File(directory, "Collage_${System.currentTimeMillis()}.png") //now parent is the directory and child is the name of collage file with currentTimeMillis() to make name unique
-    val outputStream = FileOutputStream(file) //like a pipe to send out the info
+    val outputStream = FileOutputStream(file) //like a data pipe to send out the info
     bitmap.compress(Bitmap.CompressFormat.PNG,100, outputStream) //sending the bitmap of PNG format, quality 100, to outputStream
     outputStream.flush()
     outputStream.close() //making sure all data is flushed out before closing
 }
 fun exportImage(bitmap: Bitmap, context: Context){
     val resolver = context.contentResolver //a bridge between the app and photos gallery like API handler
-    val contentValues = ContentValues().apply{ //to store metadata about the collage to save. Also "apply" refers to applying these attributes to this object of ContentValues()
+    val contentValues = ContentValues().apply{ //to store metadata(key-value container) about the collage to save.Also "apply" refers to applying these attributes to this object of ContentValues()
         put(MediaStore.MediaColumns.DISPLAY_NAME, "Collage_${System.currentTimeMillis()}.png")
         put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
         put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/DeltaImages")
     }
     val imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+    //tells Android new media entry using this metadata and android returns location of newly created img
     imageUri?.let{
         val outputStream = resolver.openOutputStream(it)
         outputStream?.use{
@@ -183,40 +213,42 @@ fun exportImage(bitmap: Bitmap, context: Context){
 
 }
 @Composable
-fun GridCell(indexnum:Int, onClick: () -> Unit, modifier:Modifier=Modifier,currentPics: List<Int?>,viewMode: Boolean,bgColouri:Color){
-    var X by remember{
-        mutableStateOf(0f)}
+fun GridCell(indexnum:Int, onClick: () -> Unit, modifier:Modifier=Modifier //Modifier=Modifier makes passing Modifier optional during fx call
+             ,currentPics: List<Int?>,viewMode: Boolean,bgColouri:Color){ //to manage each grid cell
+    var X by remember{   //without remember values reset after every recomposition
+        mutableStateOf(0f)} //with mutableStateOf UI recomposes automatically everytime the value changes
     var Y by remember{
-        mutableStateOf(0f)}
+        mutableStateOf(0f)} //all gesture values are handled with float values
     var zoomscale by remember{
-        mutableStateOf(1f)}
+        mutableStateOf(1f)} //default zoom=1 like nothing
     var rotation by remember{
-        mutableStateOf(0f)}
+        mutableStateOf(0f)} //in degree
     Box(
         modifier = modifier.clip(RoundedCornerShape(2.dp)).background(color = bgColouri).clickable{ onClick()}
     ){
-        currentPics[indexnum]?.let { pic ->
+        currentPics[indexnum]?.let { pic -> //if Image exists, render it as pic. Otherwise, nothing.
             Image(
                 painter = painterResource(pic),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Crop, //zooms image and fits it to the cell, removes extra parts if any
                 modifier = Modifier.fillMaxSize()
-                    .graphicsLayer{
+                    .graphicsLayer{ //applies transformations to composable(zoom,rotate)
                     scaleX= zoomscale
-                    scaleY= zoomscale
-                    rotationZ=rotation
+                    scaleY= zoomscale //together zooms by same scale in both directions
+                    rotationZ=rotation //rotates around Z axis
                     }
-                    .offset{
-                        IntOffset((X).toInt(),Y.toInt())
+                    .offset{ //(drag)
+                        IntOffset((X).toInt(),Y.toInt()) //moves image position
                     }
-                    .pointerInput(Unit){
+                    .pointerInput(Unit){ //handles drag,pinches,rotations and other touch events
                     detectTransformGestures { _, pan, zoom, rotate ->
                         X+=pan.x
                         Y+=pan.y
-                        zoomscale*=zoom
-                        rotation+=rotate}
+                        zoomscale*=zoom  //as these get changed, states get updated, graphicslayer and offset value changes, img moves
+                        rotation+=rotate
+                        }
                     }
-                        .pointerInput(Unit){
+                        .pointerInput(Unit){ //hmm there can be multiple pointerInputs
                         detectTapGestures(
                             onDoubleTap= {
                                 X=0f
@@ -232,26 +264,308 @@ fun GridCell(indexnum:Int, onClick: () -> Unit, modifier:Modifier=Modifier,curre
     }
 }
 @Composable
-fun OverlayText(details:TextOverlayStuffs, onDragging:(Float,Float) -> Unit){
+fun ShowPic(details:Uri){
+    var x by remember {
+        mutableStateOf(50f)
+    }
+
+    var y by remember {
+        mutableStateOf(80f)
+    }
+
+    var zoomi by remember {
+        mutableStateOf(1f)
+    }
+
+    var rotate by remember {
+        mutableStateOf(0f)
+    }
+    Image(
+        painter = rememberAsyncImagePainter(model = details),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.size(150.dp).graphicsLayer{
+            translationX = x
+            translationY = y
+            scaleX = zoomi
+        scaleY = zoomi
+        rotationZ = rotate}.pointerInput(Unit){
+            detectTransformGestures { _, pan, zoom, rotation ->
+                x+=pan.x
+                y+=pan.y
+                zoomi*=zoom
+                rotate+=rotation
+            }
+        }
+    )
+}
+@Composable
+fun ScrapbookScreen(viewMode:Boolean, navController: NavController){
+    val editorViewModel: EditorViewModel = viewModel()
+    var extend4 by remember{ mutableStateOf(false)}
+    var extend5 by remember{ mutableStateOf(false)}
+    val scope = rememberCoroutineScope()
+    val graphicsLayer = rememberGraphicsLayer()
+    val context = LocalContext.current
+    val bgColors = listOf("White","Black","Red","Blue","Green","Yellow")
+    var imageUri by remember {
+        mutableStateOf<Uri?>(null)
+    }
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+        onResult = { uri ->
+            uri?.let {
+                imageUri = it
+                editorViewModel.scrapPics = editorViewModel.scrapPics + ScrapPicStuffs(it,50f,80f,1f,0f)
+            }
+        }
+    )
+    Box(modifier = Modifier.fillMaxSize().background(color = if(viewMode) Color.Black else Color.White)){
+        Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top=40.dp,bottom=40.dp,start=20.dp,end=20.dp)){
+            Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(50.dp).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black)){
+                Text(
+                    text = "  SCRAPBOOK FREE-MODE",
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Cursive,
+                    fontSize = 20.sp,
+                    modifier = Modifier.weight(1f),
+                    color = if(viewMode)Color.Black else Color.White
+                )
+                Icon(
+                    imageVector = Icons.Default.Home,
+                    contentDescription = null,
+                    tint = if (viewMode) Color.Black else Color.White,
+                    modifier = Modifier.padding(end=12.dp).clickable{navController.popBackStack()}
+                )
+            }
+            Spacer(modifier = Modifier.height(15.dp))
+            Box(modifier = Modifier.drawWithContent{
+                graphicsLayer.record{
+                    this@drawWithContent.drawContent()
+                }
+                drawLayer(graphicsLayer)
+            }) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(400.dp).clip(
+                        RoundedCornerShape(
+                            editorViewModel.scrapRounding
+                        )
+                    ).background(color = editorViewModel.scrapBg).border(width=5.dp,color=Color.Black)
+                ) {
+                    editorViewModel.scrapPics.forEach { stuffs ->
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.TopStart
+                        ) {
+                            ShowPic(stuffs.id)
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(15.dp))
+            var val3 = editorViewModel.scrapRounding.value.toInt()
+            Row(horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(120.dp).height(30.dp).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black).align(Alignment.Start)){
+                Text(
+                    text = "   RADIUS: $val3",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = if (viewMode) Color.Black else Color.White
+                )
+            }
+            Spacer(Modifier.height(3.dp))
+            Slider(
+                value = editorViewModel.scrapRounding.value,
+                onValueChange = {
+                    editorViewModel.scrapRounding = it.dp
+                },
+                valueRange = (0.dp).value..(100.dp).value
+            )
+            Spacer(Modifier.height(5.dp))
+            Column {
+                imageUri?.let {
+                    Image(
+                        painter = rememberAsyncImagePainter(model = imageUri),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .size(50.dp)
+                            .align(Alignment.Start)
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Button(
+                        onClick = {
+                            galleryLauncher.launch("image/*")
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (viewMode) Color.White else Color.Black,
+                            contentColor = if (viewMode) Color.Black else Color.White
+                        ),
+                        modifier = Modifier.weight(1f)
+                    ) {
+
+                        Text(
+                            text = "ADD PICS",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier.weight(1f)
+                    ) {
+
+                        Button(
+                            onClick = { extend4 = true },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (viewMode) Color.White else Color.Black,
+                                contentColor = if (viewMode) Color.Black else Color.White
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+
+                            Text(
+                                text = "BG COLOR",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = extend4,
+                            onDismissRequest = { extend4 = false }
+                        ) {
+
+                            bgColors.forEach { colori ->
+
+                                DropdownMenuItem(
+                                    text = { Text(colori) },
+
+                                    onClick = {
+
+                                        when (colori) {
+                                            "White" -> editorViewModel.scrapBg = Color.White
+                                            "Black" -> editorViewModel.scrapBg = Color.Black
+                                            "Red" -> editorViewModel.scrapBg = Color.Red
+                                            "Green" -> editorViewModel.scrapBg = Color.Green
+                                            "Yellow" -> editorViewModel.scrapBg = Color.Yellow
+                                            "Blue" -> editorViewModel.scrapBg = Color.Blue
+                                        }
+
+                                        extend4 = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+            }
+            Row(horizontalArrangement = Arrangement.Absolute.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically){
+                Button(onClick = { scope.launch{
+                    val imageBitmap = graphicsLayer.toImageBitmap()
+                    val bitmap = imageBitmap.asAndroidBitmap()
+                    saveImage(bitmap, context)
+                    Toast.makeText(context, "Saved successfully", Toast.LENGTH_LONG).show()
+                }
+                }, colors= ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.White} else {Color.Black}, contentColor = if (viewMode){Color.Black} else {Color.White}), modifier = Modifier.weight(1f)
+                ){
+                    Text(
+                        text = "   SAVE   ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+                Button(onClick = { scope.launch{
+                    val imageBitmap = graphicsLayer.toImageBitmap()
+                    val bitmap = imageBitmap.asAndroidBitmap()
+                    exportImage(bitmap, context)
+                    Toast.makeText(context, "Exported successfully", Toast.LENGTH_LONG).show()
+                }
+                }, colors= ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.White} else {Color.Black}, contentColor = if (viewMode){Color.Black} else {Color.White}), modifier = Modifier.weight(1f)
+                ){
+                    Text(
+                        text = "   EXPORT  ",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+            }
+
+
+        }
+    }
+}
+
+@Composable
+fun OverlayText(
+    details: TextOverlayStuffs,
+    onDragging: (Float, Float) -> Unit
+) {
+
+    BoxWithConstraints {
+
+        val density = LocalDensity.current
+
+        val maxWidthPx =
+            with(density) {
+                maxWidth.toPx()
+            }
+
+        val maxHeightPx =
+            with(density) {
+                maxHeight.toPx()
+            }
+
+        val actualX =
+            details.relativeX * maxWidthPx
+
+        val actualY =
+            details.relativeY * maxHeightPx
 
         Text(
-            text=details.text,
-            color=details.textColor,
+            text = details.text,
+            color = details.textColor,
             fontSize = 30.sp,
             fontFamily = details.textFont,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.offset{
-                IntOffset(details.x.toInt(),details.y.toInt())
-            }.pointerInput(Unit){
-                detectDragGestures {
-                        _, dragAmount ->
-                    onDragging(dragAmount.x, dragAmount.y)
+
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        actualX.toInt(),
+                        actualY.toInt()
+                    )
                 }
-            }
+                .pointerInput(Unit) {
+
+                    detectDragGestures { _, dragAmount ->
+
+                        val deltaRelativeX =
+                            dragAmount.x / maxWidthPx
+
+                        val deltaRelativeY =
+                            dragAmount.y / maxHeightPx
+
+                        onDragging(
+                            deltaRelativeX,
+                            deltaRelativeY
+                        )
+                    }
+                }
         )
-
-
+    }
 }
+
+
 @Composable
 fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navController: NavController,viewMode:Boolean,bgColour: Color,colorChange:(Color)->Unit){
     val editorViewModel: EditorViewModel = viewModel() //this function creates ViewModel if not existing and reuses old one if existing
@@ -276,9 +590,10 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
         mutableStateOf(false)
     }
 
-    val context = LocalContext.current //for Android Environment access for storage, files, toasts, permissions etc
-    val graphicsLayer = rememberGraphicsLayer()
-    val scope = rememberCoroutineScope()
+    val context = LocalContext.current//to access Android APIs too
+    //for Android Environment access for storage, files, toasts, permissions,database,system services etc
+    val graphicsLayer = rememberGraphicsLayer() //graphics recording layer which later -> image object -> bitmap
+    val scope = rememberCoroutineScope() //for asynchronous coroutine tasks to create scope for running suspend functions
     Box(modifier= Modifier.background(if (viewMode){Color.Black} else {Color.White}).fillMaxSize()) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(start=16.dp,end=16.dp,top=40.dp,bottom=40.dp).verticalScroll(rememberScrollState())){
             Row(
@@ -303,16 +618,12 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                 )
 
                 Icon(
-                    imageVector = Icons.Default.Home,
-                    contentDescription = null,
-
-                    tint = if (viewMode){Color.Black} else {Color.White},
-
+                    imageVector = Icons.Default.Home, //selecting icon from Default Icon style pack of Compose Material icon collection
+                    contentDescription = null, //needed for both images and icons...some accessibility thing
+                    tint = if (viewMode){Color.Black} else {Color.White}, //color of icon
                     modifier = Modifier
                         .size(35.dp)
-
                         .clickable {
-
                             navController.navigate("home")
                         }
                 )
@@ -338,12 +649,19 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                     Box(
                         modifier = Modifier
                             .height(240.dp)
-                            .clip(RoundedCornerShape(editorViewModel.rounding))
-                            .background(if (viewMode){Color.Black} else {Color.White}).drawWithContent{
-                                graphicsLayer.record{
-                                    this@drawWithContent.drawContent()
+                            .clip(RoundedCornerShape(editorViewModel.rounding)) //without clip children can go outside boundaries of box
+                            .background(
+                                if (viewMode) {
+                                    Color.Black
+                                } else {
+                                    Color.White
                                 }
-                                drawLayer(graphicsLayer)
+                            )
+                            .drawWithContent { //to get temp. control on collage rendering over composable
+                                graphicsLayer.record { //record everything here to graphicsLayer canvas created earlier
+                                    this@drawWithContent.drawContent() //to draw normal UI too along with recording
+                                }
+                                drawLayer(graphicsLayer) //to display the drawn/recorded collage content
 
                             }
                     ) {
@@ -356,28 +674,39 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                                 indexnum = 0,
                                 currentPics = editorViewModel.currentPics,
                                 onClick = { editorViewModel.currentBox = 0 },
-                                modifier = Modifier.weight(1f).fillMaxHeight(), viewMode = viewMode, bgColouri = bgColour
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                                viewMode = viewMode,
+                                bgColouri = bgColour
                             )
                             GridCell(
                                 indexnum = 1,
                                 currentPics = editorViewModel.currentPics,
                                 onClick = { editorViewModel.currentBox = 1 },
-                                modifier = Modifier.weight(1f).fillMaxHeight(), viewMode = viewMode, bgColouri = bgColour
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                                viewMode = viewMode,
+                                bgColouri = bgColour
                             )
                         }
                         editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                            OverlayText(details=item, onDragging = {dx,dy ->
-                                editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
-                                    it[index] = it[index].copy(
-                                        x= it[index].x+dx,
-                                        y= it[index].y+dy
-                                    )
-                                }
+                            OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
+                                editorViewModel.listOfTextOvers =
+                                    editorViewModel.listOfTextOvers.toMutableList().also {
+                                        it[index] = it[index].copy(
+                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                                0f,
+                                                1f
+                                            ),
+                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                                0f,
+                                                1f
+                                            )
+                                        )
+                                    }
                             })
                         }
-
                     }
                 }
+
 
                 LayoutT.THREE_GRID -> {
 
@@ -430,13 +759,20 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                         }
                     }
                     editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                        OverlayText(details=item, onDragging = {dx,dy ->
-                            editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
-                                it[index] = it[index].copy(
-                                    x= it[index].x+dx,
-                                    y= it[index].y+dy
-                                )
-                            }
+                        OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
+                            editorViewModel.listOfTextOvers =
+                                editorViewModel.listOfTextOvers.toMutableList().also {
+                                    it[index] = it[index].copy(
+                                        relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                            0f,
+                                            1f
+                                        ),
+                                        relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                            0f,
+                                            1f
+                                        )
+                                    )
+                                }
                         })
                     }
                 }
@@ -511,13 +847,20 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                             }
                         }
                         editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                            OverlayText(details=item, onDragging = {dx,dy ->
-                                editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
-                                    it[index] = it[index].copy(
-                                        x= it[index].x+dx,
-                                        y= it[index].y+dy
-                                    )
-                                }
+                            OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
+                                editorViewModel.listOfTextOvers =
+                                    editorViewModel.listOfTextOvers.toMutableList().also {
+                                        it[index] = it[index].copy(
+                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                                0f,
+                                                1f
+                                            ),
+                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                                0f,
+                                                1f
+                                            )
+                                        )
+                                    }
                             })
                         }
 
@@ -600,13 +943,20 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                             }
                         }
                         editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                            OverlayText(details=item, onDragging = {dx,dy ->
-                                editorViewModel.listOfTextOvers = editorViewModel.listOfTextOvers.toMutableList().also{
-                                    it[index] = it[index].copy(
-                                        x= it[index].x+dx,
-                                        y= it[index].y+dy
-                                    )
-                                }
+                            OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
+                                editorViewModel.listOfTextOvers =
+                                    editorViewModel.listOfTextOvers.toMutableList().also {
+                                        it[index] = it[index].copy(
+                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                                0f,
+                                                1f
+                                            ),
+                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                                0f,
+                                                1f
+                                            )
+                                        )
+                                    }
                             })
                         }
 
@@ -656,9 +1006,9 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
             Spacer(modifier = Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(12.dp)).background(color=if(viewMode)Color.White else Color.Black)){
                 Spacer(modifier = Modifier.height(1.dp))
-                Button( onClick={ scope.launch {
+                Button( onClick={ scope.launch { //to start a coroutine/asynchronous task without freezing UI
                     Toast.makeText(context, "Saved successfully", Toast.LENGTH_LONG).show()
-                    val imageBitmap = graphicsLayer.toImageBitmap()
+                    val imageBitmap = graphicsLayer.toImageBitmap() //a suspend function to render image object
                     val bitmap = imageBitmap.asAndroidBitmap()
                     saveImage(bitmap,context)
                 } },
@@ -759,7 +1109,8 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                 if (editorViewModel.showDone) {
                     Button(
                         onClick = { editorViewModel.listOfTextOvers =
-                            editorViewModel.listOfTextOvers + TextOverlayStuffs(text = editorViewModel.textOverlay, x = 0f, y = 0f, textColor = editorViewModel.selectedColor, textFont = editorViewModel.selectedStyle)
+                            editorViewModel.listOfTextOvers + TextOverlayStuffs(text = editorViewModel.textOverlay, relativeX = 0f, relativeY = 0f, textColor = editorViewModel.selectedColor, textFont = editorViewModel.selectedStyle)
+//creating new list for recomposing UI (oldlist + new item)
                             editorViewModel.displayOverlay = false
                             editorViewModel.showDone = false
                             editorViewModel.textOverlay = "" },
@@ -926,7 +1277,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
 
 }
 @Composable
-fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSelection:(LayoutT) -> Unit,viewMode:Boolean, changeView: ()->Unit,bgColour: Color,colorChange:(colori:Color)->Unit) {
+fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSelection:(LayoutT) -> Unit,viewMode:Boolean, changeView: ()->Unit,bgColour: Color,colorChange:(Color)->Unit) {
 
         Box(modifier = Modifier.background(color=if (viewMode){Color.Black} else {Color.White}).fillMaxSize()) {
             Column(
@@ -935,19 +1286,19 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                 modifier = Modifier.padding(start=16.dp,end=16.dp,top=40.dp,bottom=40.dp).verticalScroll(rememberScrollState())
             ) {
                 Spacer(modifier = Modifier.height(20.dp))
-                Row(modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(color= if (viewMode){Color.White} else {Color.Black}).height(45.dp), horizontalArrangement = Arrangement.spacedBy(55.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(color= if (viewMode){Color.White} else {Color.Black}).height(45.dp), horizontalArrangement = Arrangement.spacedBy(60.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "GALLERY",
                         color = if (viewMode){Color.Black} else {Color.White},
                         fontSize = 35.sp,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.background(
-                            color = if (viewMode){Color.White} else {Color.Black},
-                            shape = RoundedCornerShape(12.dp)
-                        ).padding(start = 4.dp)
+                        modifier = Modifier.padding(start = 4.dp)
                     )
                     Button(onClick={changeView()
-                        colorChange(if (viewMode) Color.Black else Color.White)}, colors = ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.Black} else {Color.White}, contentColor = if (viewMode){Color.White} else {Color.Black})){
+                        val newie = !viewMode
+                        colorChange(if (newie) Color.White else Color.Black)
+
+                                   }, colors = ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.Black} else {Color.White}, contentColor = if (viewMode){Color.White} else {Color.Black})){
                         Text(
                             text = if (viewMode) "LIGHT MODE" else "DARK MODE",
                             fontSize =10.sp,
@@ -964,8 +1315,22 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.align(Alignment.Start)
                 )
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+                Spacer(modifier = Modifier.height(3.dp))
+                Row(horizontalArrangement = Arrangement.Absolute.Center, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(40.dp).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black).
+                clickable{
+                    navController.navigate("scrapbook")
+                }){
+                    Text(
+                        text = "SCRAPBOOK MODE",
+                        fontSize = 25.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Cursive,
+                        color = if(viewMode)Color.Black else Color.White
+
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(15.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "2 GRID",
                         color = if (viewMode){Color.Black} else {Color.White},
@@ -990,10 +1355,10 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(15.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth() //fill maximum width of parent column
                 ) {
                     Box(
-                        modifier = Modifier.weight(1f).height(240.dp).border(
+                        modifier = Modifier.weight(1f).height(240.dp).border( //divide width equally cuz of two 1f
                             width = if (selectedLayout == LayoutT.TWO_GRID) {
                                 5.dp
                             } else {
@@ -1009,7 +1374,7 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                             )}) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize() //fill maximum size of parent box...height, width taken care by parent
                         ) {
                             Box(
                                 Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).height(240.dp)
@@ -1044,24 +1409,23 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                         ) {
                             Box(
                                 Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).height(240.dp)
-                                    .fillMaxWidth()
+
                             ) {
 
                             }
                             Box(
                                 Modifier.weight(1f).background(color = if (viewMode){Color.Black} else {Color.White}).height(240.dp)
-                                    .fillMaxWidth()
+
                             ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Column(verticalArrangement = Arrangement.spacedBy(5.dp),modifier = Modifier.fillMaxSize()) {
                                     Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
+                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).fillMaxWidth()
+
                                     ) {
 
                                     }
                                     Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
+                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).fillMaxWidth()
                                     ) {
 
                                     }
@@ -1260,6 +1624,6 @@ fun GreetingPreview() {
         var bgColour by remember{
             mutableStateOf(if(viewMode)Color.White else Color.Black)
         }
-        SecondScreen(selectedLayoutT= LayoutT.THREE_GRID, navController= navController,viewMode=viewMode, bgColour = bgColour,colorChange = {newcolor -> bgColour = newcolor})
+        ScrapbookScreen(viewMode = viewMode, navController = navController)
     }
 }
