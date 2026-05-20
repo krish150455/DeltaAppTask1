@@ -60,5 +60,6 @@ dependencies {
         "androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7"// for landscape mode-viewmodel class
     )
     implementation("io.coil-kt:coil-compose:2.4.0") //for uploading pics from gallery
+    implementation("androidx.constraintlayout:constraintlayout-compose:1.0.0-alpha05")
 
 }

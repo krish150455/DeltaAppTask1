@@ -1,9 +1,12 @@
 package com.example.deltaapp1
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.lazy.grid.items
 import android.content.ContentValues
 import android.content.Context
+import android.content.Context.MODE_PRIVATE
 import android.os.Bundle
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
@@ -46,6 +49,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -54,7 +58,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,6 +71,7 @@ import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -77,16 +85,21 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.BlendMode.Companion.Screen
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation.width
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
@@ -94,7 +107,10 @@ import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 
 import com.example.deltaapp1.ui.theme.DeltaApp1Theme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okio.IOException
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URLDecoder
@@ -178,22 +194,51 @@ class MainActivity : ComponentActivity() {
                     composable("scrapbook"){
                         ScrapbookScreen(editorViewModel.viewMode, navController)
                     }
+                    composable("savedpics"){
+                        SavedPicsScreen(editorViewModel.viewMode,navController)
+                    }
                 }
             }
         }
     }
 }
+@Composable
+fun AdaptiveSp(base: Float, max: Float = base * 1.4f): TextUnit {
+    val screenWidth = LocalConfiguration.current.screenWidthDp
+    val scale = (screenWidth / 360f).coerceIn(0.75f, 1.4f)
+    return (base * scale).coerceAtMost(max).sp
+}
 
-fun saveImage(bitmap:Bitmap,context: Context){
-    val directory = File(context.filesDir, "Collages_saved") //creates a path object with child named folder in the app's private storage location
-    if (!directory.exists()){
-        directory.mkdirs() // check if the folder/directory exists and if not, make one
+@Composable
+fun AdaptiveDp(base: Float, max: Float = base * 1.5f): Dp {
+    val screenWidth = LocalConfiguration.current.screenWidthDp
+    val scale = (screenWidth / 360f).coerceIn(0.75f, 1.5f)
+    return (base * scale).coerceAtMost(max).dp
+}
+data class InternPhoto(
+    val name:String,
+    val bmp:Bitmap
+)
+private suspend fun loadSavedImages(context:Context): List<InternPhoto>{
+    return withContext(Dispatchers.IO){
+        val files = context.filesDir?.listFiles()
+        files?.filter{ it.canRead() && it.isFile && it.name.endsWith(".png")}?.map{
+            val bytes = it.readBytes()
+            val bmp = BitmapFactory.decodeByteArray(bytes,0,bytes.size)
+            InternPhoto(it.name, bmp)
+        } ?: listOf()
     }
-    val file = File(directory, "Collage_${System.currentTimeMillis()}.png") //now parent is the directory and child is the name of collage file with currentTimeMillis() to make name unique
-    val outputStream = FileOutputStream(file) //like a data pipe to send out the info
-    bitmap.compress(Bitmap.CompressFormat.PNG,100, outputStream) //sending the bitmap of PNG format, quality 100, to outputStream
-    outputStream.flush()
-    outputStream.close() //making sure all data is flushed out before closing
+}
+private fun saveImage(bitmap:Bitmap,context: Context){
+    try{
+        context.openFileOutput("Collage_${System.currentTimeMillis()}.png", MODE_PRIVATE).use{
+            stream -> if (!bitmap.compress(Bitmap.CompressFormat.PNG,100,stream)){
+                throw IOException ("Couldn't save Bitmap")
+        }
+        }
+    } catch(e: IOException){
+        e.printStackTrace()
+    }
 }
 fun exportImage(bitmap: Bitmap, context: Context){
     val resolver = context.contentResolver //a bridge between the app and photos gallery like API handler
@@ -265,39 +310,106 @@ fun GridCell(indexnum:Int, onClick: () -> Unit, modifier:Modifier=Modifier //Mod
 }
 @Composable
 fun ShowPic(details:Uri){
-    var x by remember {
-        mutableStateOf(50f)
-    }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val density = LocalDensity.current //dp for layouting and px for gestures
+        val containerWidthPx = with(density) { maxWidth.toPx() }
+        val containerHeightPx = with(density) { maxHeight.toPx() }
+        val imageSizeDp = maxWidth * 0.3f
 
-    var y by remember {
-        mutableStateOf(80f)
-    }
+        var x by remember {
+            mutableStateOf<Float>((maxWidth.value-imageSizeDp.value)/2f)
+        }
 
-    var zoomi by remember {
-        mutableStateOf(1f)
-    }
+        var y by remember {
+            mutableStateOf<Float>((maxHeight.value-imageSizeDp.value)/2f)
+        }
 
-    var rotate by remember {
-        mutableStateOf(0f)
+        var zoomi by remember {
+            mutableStateOf(1f)
+        }
+
+        var rotate by remember {
+            mutableStateOf(0f)
+        }
+        Image(
+            painter = rememberAsyncImagePainter(model = details),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(imageSizeDp).graphicsLayer {
+                translationX = x
+                translationY = y
+                scaleX = zoomi
+                scaleY = zoomi
+                rotationZ = rotate
+            }.pointerInput(Unit) {
+                detectTransformGestures { _, pan, zoom, rotation ->
+                    x += pan.x
+                    y += pan.y
+                    zoomi *= zoom
+                    rotate += rotation
+                }
+            }
+        )
     }
-    Image(
-        painter = rememberAsyncImagePainter(model = details),
-        contentDescription = null,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier.size(150.dp).graphicsLayer{
-            translationX = x
-            translationY = y
-            scaleX = zoomi
-        scaleY = zoomi
-        rotationZ = rotate}.pointerInput(Unit){
-            detectTransformGestures { _, pan, zoom, rotation ->
-                x+=pan.x
-                y+=pan.y
-                zoomi*=zoom
-                rotate+=rotation
+}
+@Composable
+fun SavedPicsScreen(viewMode:Boolean,navController: NavController){
+    val context = LocalContext.current
+
+        var photos by remember{
+            mutableStateOf(listOf<InternPhoto>())
+        }
+    LaunchedEffect(Unit) { //imp for launching coroutine only once can't be safely kept under composable without this
+        photos = loadSavedImages(context)
+    }
+    Box(modifier = Modifier.fillMaxSize().background(if (viewMode)Color.Black else Color.White ).padding(vertical=AdaptiveDp(40f),horizontal = AdaptiveDp(16f))) {
+        Column(
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().height(AdaptiveDp(40f)).clip(RoundedCornerShape(12.dp))
+                    .background(color = if (viewMode) Color.White else Color.Black).padding(AdaptiveDp(5f))
+            ) {
+                Text(
+                    text = "SAVED IMAGES",
+                    color = if (viewMode) Color.Black else Color.White,
+                    fontSize = AdaptiveSp(20f),
+                    fontWeight = FontWeight.Bold
+                )
+                IconButton(
+                    onClick = {
+                        navController.navigate("home")
+                    }) {
+                    Icon(
+                        imageVector = Icons.Default.Home,
+                        contentDescription = null,
+                        tint = if (viewMode) Color.Black else Color.White,
+                        modifier = Modifier.size(AdaptiveDp(20f))
+                    )
+                }
+            }
+            Spacer(modifier=Modifier.height(12.dp))
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = AdaptiveDp(128f)),
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(AdaptiveDp(8f)),
+                horizontalArrangement = Arrangement.spacedBy(AdaptiveDp(8f))
+            ) {
+                items(photos) {
+                    photo ->
+                    Image(
+                        bitmap = photo.bmp.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(12.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
         }
-    )
+    }
 }
 @Composable
 fun ScrapbookScreen(viewMode:Boolean, navController: NavController){
@@ -321,58 +433,65 @@ fun ScrapbookScreen(viewMode:Boolean, navController: NavController){
         }
     )
     Box(modifier = Modifier.fillMaxSize().background(color = if(viewMode) Color.Black else Color.White)){
-        Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top=40.dp,bottom=40.dp,start=20.dp,end=20.dp)){
-            Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(50.dp).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black)){
+        Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top=AdaptiveDp(40f),bottom=AdaptiveDp(40f),start=AdaptiveDp(20f),end=AdaptiveDp(20f))){
+            Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(AdaptiveDp(50f)).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black)){
                 Text(
                     text = "  SCRAPBOOK FREE-MODE",
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Cursive,
-                    fontSize = 20.sp,
+                    fontSize = AdaptiveSp(20f),
                     modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     color = if(viewMode)Color.Black else Color.White
                 )
                 Icon(
                     imageVector = Icons.Default.Home,
                     contentDescription = null,
+
                     tint = if (viewMode) Color.Black else Color.White,
-                    modifier = Modifier.padding(end=12.dp).clickable{navController.popBackStack()}
+                    modifier = Modifier.padding(end=12.dp).size(AdaptiveDp(30f)).clickable{navController.popBackStack()}
                 )
             }
             Spacer(modifier = Modifier.height(15.dp))
-            Box(modifier = Modifier.drawWithContent{
-                graphicsLayer.record{
-                    this@drawWithContent.drawContent()
-                }
-                drawLayer(graphicsLayer)
-            }) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().height(400.dp).clip(
-                        RoundedCornerShape(
-                            editorViewModel.scrapRounding
-                        )
-                    ).background(color = editorViewModel.scrapBg).border(width=5.dp,color=Color.Black)
-                ) {
-                    editorViewModel.scrapPics.forEach { stuffs ->
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.TopStart
-                        ) {
-                            ShowPic(stuffs.id)
+            BoxWithConstraints(modifier=Modifier.fillMaxWidth()) {
+                var newHeight = maxWidth*1.2f
+                Box(modifier = Modifier.drawWithContent {
+                    graphicsLayer.record {
+                        this@drawWithContent.drawContent()
+                    }
+                    drawLayer(graphicsLayer)
+                }) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(newHeight).clip(
+                            RoundedCornerShape(
+                                editorViewModel.scrapRounding
+                            )
+                        ).background(color = editorViewModel.scrapBg)
+                            .border(width = 5.dp, color = Color.Black)
+                    ) {
+                        editorViewModel.scrapPics.forEach { stuffs ->
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.TopStart
+                            ) {
+                                ShowPic(stuffs.id)
+                            }
                         }
                     }
                 }
             }
             Spacer(modifier = Modifier.height(15.dp))
             var val3 = editorViewModel.scrapRounding.value.toInt()
-            Row(horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(120.dp).height(30.dp).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black).align(Alignment.Start)){
+            Row(horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.wrapContentWidth().height(30.dp).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black).align(Alignment.Start)){
                 Text(
-                    text = "   RADIUS: $val3",
+                    text = "   RADIUS: $val3  ",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
+                    fontSize = AdaptiveSp(16f),
                     color = if (viewMode) Color.Black else Color.White
                 )
             }
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(8.dp))
             Slider(
                 value = editorViewModel.scrapRounding.value,
                 onValueChange = {
@@ -415,7 +534,7 @@ fun ScrapbookScreen(viewMode:Boolean, navController: NavController){
                         Text(
                             text = "ADD PICS",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
+                            fontSize = AdaptiveSp(16f)
                         )
                     }
 
@@ -435,7 +554,7 @@ fun ScrapbookScreen(viewMode:Boolean, navController: NavController){
                             Text(
                                 text = "BG COLOR",
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontSize = AdaptiveSp(16f)
                             )
                         }
 
@@ -481,7 +600,7 @@ fun ScrapbookScreen(viewMode:Boolean, navController: NavController){
                     Text(
                         text = "   SAVE   ",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
+                        fontSize = AdaptiveSp(16f)
                     )
                 }
                 Button(onClick = { scope.launch{
@@ -495,7 +614,7 @@ fun ScrapbookScreen(viewMode:Boolean, navController: NavController){
                     Text(
                         text = "   EXPORT  ",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
+                        fontSize = AdaptiveSp(16f)
                     )
                 }
             }
@@ -534,7 +653,7 @@ fun OverlayText(
         Text(
             text = details.text,
             color = details.textColor,
-            fontSize = 30.sp,
+            fontSize = AdaptiveSp(30f),
             fontFamily = details.textFont,
             fontWeight = FontWeight.Bold,
 
@@ -595,7 +714,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
     val graphicsLayer = rememberGraphicsLayer() //graphics recording layer which later -> image object -> bitmap
     val scope = rememberCoroutineScope() //for asynchronous coroutine tasks to create scope for running suspend functions
     Box(modifier= Modifier.background(if (viewMode){Color.Black} else {Color.White}).fillMaxSize()) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(start=16.dp,end=16.dp,top=40.dp,bottom=40.dp).verticalScroll(rememberScrollState())){
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center, modifier = Modifier.padding(start=AdaptiveDp(16f),end=AdaptiveDp(16f),top=AdaptiveDp(40f),bottom=AdaptiveDp(40f)).verticalScroll(rememberScrollState())){
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -613,8 +732,10 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                 Text(
                     text = "GALLERY",
                     color = if (viewMode){Color.Black} else {Color.White},
-                    fontSize = 39.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = AdaptiveSp(30f),
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
 
                 Icon(
@@ -622,7 +743,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                     contentDescription = null, //needed for both images and icons...some accessibility thing
                     tint = if (viewMode){Color.Black} else {Color.White}, //color of icon
                     modifier = Modifier
-                        .size(35.dp)
+                        .size(AdaptiveDp(30f))
                         .clickable {
                             navController.navigate("home")
                         }
@@ -632,345 +753,441 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
             Text(
                 text = "CUSTOM EDITOR",
                 color = if (viewMode){Color.White} else {Color.Black},
-                fontSize = 35.sp,
+                fontSize = AdaptiveSp(25f),
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start)
+                modifier = Modifier.align(Alignment.Start),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(16.dp))
-            Box(
-                modifier = Modifier
-                    .height(240.dp)
-                    .fillMaxWidth()
-            ){
-                when (selectedLayoutT) {
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                var newHeight = maxWidth*0.7f
+                Box(
+                    modifier = Modifier
+                        .height(newHeight)
+                        .fillMaxWidth()
+                ) {
+                    when (selectedLayoutT) {
 
-                LayoutT.TWO_GRID -> {
+                        LayoutT.TWO_GRID -> {
 
-                    Box(
-                        modifier = Modifier
-                            .height(240.dp)
-                            .clip(RoundedCornerShape(editorViewModel.rounding)) //without clip children can go outside boundaries of box
-                            .background(
-                                if (viewMode) {
-                                    Color.Black
-                                } else {
-                                    Color.White
-                                }
-                            )
-                            .drawWithContent { //to get temp. control on collage rendering over composable
-                                graphicsLayer.record { //record everything here to graphicsLayer canvas created earlier
-                                    this@drawWithContent.drawContent() //to draw normal UI too along with recording
-                                }
-                                drawLayer(graphicsLayer) //to display the drawn/recorded collage content
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(editorViewModel.rounding)) //without clip children can go outside boundaries of box
+                                    .background(
+                                        if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    )
+                                    .drawWithContent { //to get temp. control on collage rendering over composable
+                                        graphicsLayer.record { //record everything here to graphicsLayer canvas created earlier
+                                            this@drawWithContent.drawContent() //to draw normal UI too along with recording
+                                        }
+                                        drawLayer(graphicsLayer) //to display the drawn/recorded collage content
 
-                            }
-                    ) {
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            GridCell(
-                                indexnum = 0,
-                                currentPics = editorViewModel.currentPics,
-                                onClick = { editorViewModel.currentBox = 0 },
-                                modifier = Modifier.weight(1f).fillMaxHeight(),
-                                viewMode = viewMode,
-                                bgColouri = bgColour
-                            )
-                            GridCell(
-                                indexnum = 1,
-                                currentPics = editorViewModel.currentPics,
-                                onClick = { editorViewModel.currentBox = 1 },
-                                modifier = Modifier.weight(1f).fillMaxHeight(),
-                                viewMode = viewMode,
-                                bgColouri = bgColour
-                            )
-                        }
-                        editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                            OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
-                                editorViewModel.listOfTextOvers =
-                                    editorViewModel.listOfTextOvers.toMutableList().also {
-                                        it[index] = it[index].copy(
-                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
-                                                0f,
-                                                1f
-                                            ),
-                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
-                                                0f,
-                                                1f
-                                            )
-                                        )
                                     }
-                            })
-                        }
-                    }
-                }
-
-
-                LayoutT.THREE_GRID -> {
-
-                    Box(
-                        modifier = Modifier
-                            .height(240.dp)
-                            .clip(RoundedCornerShape(editorViewModel.rounding))
-                            .background(if (viewMode){Color.Black} else {Color.White}).drawWithContent{
-                                graphicsLayer.record{
-                                    this@drawWithContent.drawContent()
-                                }
-                                drawLayer(graphicsLayer)
-                            }
-                    ) {
-
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            GridCell(
-                                indexnum = 0,
-                                currentPics = editorViewModel.currentPics,
-                                onClick = { editorViewModel.currentBox = 0 },
-                                modifier = Modifier.weight(1f).fillMaxHeight(), viewMode = viewMode, bgColouri = bgColour
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .background(if (viewMode){Color.Black} else {Color.White})
-                                    .fillMaxHeight()
-                            ) {
-                                Column(
-                                    verticalArrangement = Arrangement.spacedBy(editorViewModel.spacing)
-                                ) {
-                                    GridCell(
-                                        indexnum = 1,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 1 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
-                                    GridCell(
-                                        indexnum = 2,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 2 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                        OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
-                            editorViewModel.listOfTextOvers =
-                                editorViewModel.listOfTextOvers.toMutableList().also {
-                                    it[index] = it[index].copy(
-                                        relativeX = (it[index].relativeX + dxPercent).coerceIn(
-                                            0f,
-                                            1f
-                                        ),
-                                        relativeY = (it[index].relativeY + dyPercent).coerceIn(
-                                            0f,
-                                            1f
-                                        )
-                                    )
-                                }
-                        })
-                    }
-                }
-
-                LayoutT.FOUR_GRID -> {
-
-                    Box(
-                        modifier = Modifier
-                            .height(240.dp)
-                            .clip(RoundedCornerShape(editorViewModel.rounding))
-                            .background(if (viewMode){Color.Black} else {Color.White}).drawWithContent{
-                                graphicsLayer.record{
-                                    this@drawWithContent.drawContent()
-                                }
-                                drawLayer(graphicsLayer)
-                            }
-                    ) {
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .background(if (viewMode){Color.Black} else {Color.White})
-                                    .fillMaxHeight()
                             ) {
 
-                                Column(
-                                    verticalArrangement = Arrangement.spacedBy(editorViewModel.spacing)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
+                                    modifier = Modifier.fillMaxSize()
                                 ) {
                                     GridCell(
                                         indexnum = 0,
                                         currentPics = editorViewModel.currentPics,
                                         onClick = { editorViewModel.currentBox = 0 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
+                                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                                        viewMode = viewMode,
+                                        bgColouri = bgColour
                                     )
                                     GridCell(
                                         indexnum = 1,
                                         currentPics = editorViewModel.currentPics,
                                         onClick = { editorViewModel.currentBox = 1 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
+                                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                                        viewMode = viewMode,
+                                        bgColouri = bgColour
                                     )
                                 }
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .background(if (viewMode){Color.Black} else {Color.White})
-                                    .fillMaxHeight()
-                            ) {
-
-                                Column(
-                                    verticalArrangement = Arrangement.spacedBy(editorViewModel.spacing)
-                                ) {
-                                    GridCell(
-                                        indexnum = 2,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 2 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
-                                    GridCell(
-                                        indexnum = 3,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 3 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
+                                editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                                    OverlayText(
+                                        details = item,
+                                        onDragging = { dxPercent, dyPercent ->
+                                            editorViewModel.listOfTextOvers =
+                                                editorViewModel.listOfTextOvers.toMutableList()
+                                                    .also {
+                                                        it[index] = it[index].copy(
+                                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                                                0f,
+                                                                1f
+                                                            ),
+                                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                                                0f,
+                                                                1f
+                                                            )
+                                                        )
+                                                    }
+                                        })
                                 }
                             }
                         }
-                        editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                            OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
-                                editorViewModel.listOfTextOvers =
-                                    editorViewModel.listOfTextOvers.toMutableList().also {
-                                        it[index] = it[index].copy(
-                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
-                                                0f,
-                                                1f
-                                            ),
-                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
-                                                0f,
-                                                1f
-                                            )
-                                        )
+
+
+                        LayoutT.THREE_GRID -> {
+
+                            Box(
+                                modifier = Modifier
+                                    .height(newHeight)
+                                    .clip(RoundedCornerShape(editorViewModel.rounding))
+                                    .background(
+                                        if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).drawWithContent {
+                                        graphicsLayer.record {
+                                            this@drawWithContent.drawContent()
+                                        }
+                                        drawLayer(graphicsLayer)
                                     }
-                            })
-                        }
-
-                    }
-                }
-
-                LayoutT.FIVE_GRID -> {
-
-                    Box(
-                        modifier = Modifier
-                            .height(240.dp)
-                            .clip(RoundedCornerShape(editorViewModel.rounding))
-                            .background(if (viewMode){Color.Black} else {Color.White}).drawWithContent{
-                                graphicsLayer.record{
-                                    this@drawWithContent.drawContent()
-                                }
-                                drawLayer(graphicsLayer)
-                            }
-                    ) {
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .background(if (viewMode){Color.Black} else {Color.White})
-                                    .fillMaxHeight()
                             ) {
 
-                                Column(
-                                    verticalArrangement = Arrangement.spacedBy(editorViewModel.spacing)
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
+                                    modifier = Modifier.fillMaxSize()
                                 ) {
                                     GridCell(
                                         indexnum = 0,
                                         currentPics = editorViewModel.currentPics,
                                         onClick = { editorViewModel.currentBox = 0 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
+                                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                                        viewMode = viewMode,
+                                        bgColouri = bgColour
                                     )
-                                    GridCell(
-                                        indexnum = 1,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 1 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
-                                    GridCell(
-                                        indexnum = 2,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 2 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(
+                                                if (viewMode) {
+                                                    Color.Black
+                                                } else {
+                                                    Color.White
+                                                }
+                                            )
+                                            .fillMaxHeight()
+                                    ) {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(
+                                                editorViewModel.spacing
+                                            )
+                                        ) {
+                                            GridCell(
+                                                indexnum = 1,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 1 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                            GridCell(
+                                                indexnum = 2,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 2 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                        }
+                                    }
                                 }
                             }
+                            editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                                OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
+                                    editorViewModel.listOfTextOvers =
+                                        editorViewModel.listOfTextOvers.toMutableList().also {
+                                            it[index] = it[index].copy(
+                                                relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                                    0f,
+                                                    1f
+                                                ),
+                                                relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                                    0f,
+                                                    1f
+                                                )
+                                            )
+                                        }
+                                })
+                            }
+                        }
+
+                        LayoutT.FOUR_GRID -> {
 
                             Box(
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .background(if (viewMode){Color.Black} else {Color.White})
-                                    .fillMaxHeight()
+                                    .height(newHeight)
+                                    .clip(RoundedCornerShape(editorViewModel.rounding))
+                                    .background(
+                                        if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).drawWithContent {
+                                        graphicsLayer.record {
+                                            this@drawWithContent.drawContent()
+                                        }
+                                        drawLayer(graphicsLayer)
+                                    }
                             ) {
 
-                                Column(
-                                    verticalArrangement = Arrangement.spacedBy(editorViewModel.spacing)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
+                                    modifier = Modifier.fillMaxSize()
                                 ) {
-                                    GridCell(
-                                        indexnum = 3,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 3 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
-                                    GridCell(
-                                        indexnum = 4,
-                                        currentPics = editorViewModel.currentPics,
-                                        onClick = { editorViewModel.currentBox = 4 },
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),viewMode = viewMode, bgColouri = bgColour
-                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(
+                                                if (viewMode) {
+                                                    Color.Black
+                                                } else {
+                                                    Color.White
+                                                }
+                                            )
+                                            .fillMaxHeight()
+                                    ) {
+
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(
+                                                editorViewModel.spacing
+                                            )
+                                        ) {
+                                            GridCell(
+                                                indexnum = 0,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 0 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                            GridCell(
+                                                indexnum = 1,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 1 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                        }
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(
+                                                if (viewMode) {
+                                                    Color.Black
+                                                } else {
+                                                    Color.White
+                                                }
+                                            )
+                                            .fillMaxHeight()
+                                    ) {
+
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(
+                                                editorViewModel.spacing
+                                            )
+                                        ) {
+                                            GridCell(
+                                                indexnum = 2,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 2 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                            GridCell(
+                                                indexnum = 3,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 3 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                        }
+                                    }
                                 }
+                                editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                                    OverlayText(
+                                        details = item,
+                                        onDragging = { dxPercent, dyPercent ->
+                                            editorViewModel.listOfTextOvers =
+                                                editorViewModel.listOfTextOvers.toMutableList()
+                                                    .also {
+                                                        it[index] = it[index].copy(
+                                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                                                0f,
+                                                                1f
+                                                            ),
+                                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                                                0f,
+                                                                1f
+                                                            )
+                                                        )
+                                                    }
+                                        })
+                                }
+
                             }
                         }
-                        editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
-                            OverlayText(details = item, onDragging = { dxPercent, dyPercent ->
-                                editorViewModel.listOfTextOvers =
-                                    editorViewModel.listOfTextOvers.toMutableList().also {
-                                        it[index] = it[index].copy(
-                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
-                                                0f,
-                                                1f
-                                            ),
-                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
-                                                0f,
-                                                1f
-                                            )
-                                        )
-                                    }
-                            })
-                        }
 
+                        LayoutT.FIVE_GRID -> {
+
+                            Box(
+                                modifier = Modifier
+                                    .height(newHeight)
+                                    .clip(RoundedCornerShape(editorViewModel.rounding))
+                                    .background(
+                                        if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).drawWithContent {
+                                        graphicsLayer.record {
+                                            this@drawWithContent.drawContent()
+                                        }
+                                        drawLayer(graphicsLayer)
+                                    }
+                            ) {
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(editorViewModel.spacing),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(
+                                                if (viewMode) {
+                                                    Color.Black
+                                                } else {
+                                                    Color.White
+                                                }
+                                            )
+                                            .fillMaxHeight()
+                                    ) {
+
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(
+                                                editorViewModel.spacing
+                                            )
+                                        ) {
+                                            GridCell(
+                                                indexnum = 0,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 0 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                            GridCell(
+                                                indexnum = 1,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 1 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                            GridCell(
+                                                indexnum = 2,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 2 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                        }
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(
+                                                if (viewMode) {
+                                                    Color.Black
+                                                } else {
+                                                    Color.White
+                                                }
+                                            )
+                                            .fillMaxHeight()
+                                    ) {
+
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(
+                                                editorViewModel.spacing
+                                            )
+                                        ) {
+                                            GridCell(
+                                                indexnum = 3,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 3 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                            GridCell(
+                                                indexnum = 4,
+                                                currentPics = editorViewModel.currentPics,
+                                                onClick = { editorViewModel.currentBox = 4 },
+                                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                                viewMode = viewMode,
+                                                bgColouri = bgColour
+                                            )
+                                        }
+                                    }
+                                }
+                                editorViewModel.listOfTextOvers.forEachIndexed { index, item ->
+                                    OverlayText(
+                                        details = item,
+                                        onDragging = { dxPercent, dyPercent ->
+                                            editorViewModel.listOfTextOvers =
+                                                editorViewModel.listOfTextOvers.toMutableList()
+                                                    .also {
+                                                        it[index] = it[index].copy(
+                                                            relativeX = (it[index].relativeX + dxPercent).coerceIn(
+                                                                0f,
+                                                                1f
+                                                            ),
+                                                            relativeY = (it[index].relativeY + dyPercent).coerceIn(
+                                                                0f,
+                                                                1f
+                                                            )
+                                                        )
+                                                    }
+                                        })
+                                }
+
+                            }
+                        }
                     }
                 }
             }
-            }
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(16.dp))
             var intVal1 = editorViewModel.rounding.value.toInt()
             var intVal2 = editorViewModel.spacing.value.toInt()
             Text(
                 text = "RADIUS:$intVal1  ",
                 modifier = Modifier.background(if (viewMode){Color.White} else {Color.Black},shape = RoundedCornerShape(10.dp)).align(Alignment.Start).padding(start=5.dp),
-                fontSize = 28.sp,
+                fontSize = AdaptiveSp(25f),
                 color = if (viewMode){Color.Black} else {Color.White},
                 fontWeight = FontWeight.Bold
             )
@@ -987,7 +1204,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
             Text(
                 text = "SPACING:$intVal2 ",
                 modifier = Modifier.background(if (viewMode){Color.White} else {Color.Black},shape = RoundedCornerShape(10.dp)).align(Alignment.Start).padding(start=5.dp),
-                fontSize = 28.sp,
+                fontSize = AdaptiveSp(25f),
                 color = if (viewMode){Color.Black} else {Color.White},
                 fontWeight = FontWeight.Bold
 
@@ -1001,39 +1218,38 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
 
             )
 
-
-
             Spacer(modifier = Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(12.dp)).background(color=if(viewMode)Color.White else Color.Black)){
-                Spacer(modifier = Modifier.height(1.dp))
-                Button( onClick={ scope.launch { //to start a coroutine/asynchronous task without freezing UI
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(AdaptiveDp(40f)).clip(RoundedCornerShape(12.dp)).background(color=if(viewMode)Color.White else Color.Black)){
+                Spacer(modifier=Modifier.height(2.dp))
+                Button( modifier=Modifier.weight(1f).height(AdaptiveDp(30f)),onClick={ scope.launch { //to start a coroutine/asynchronous task without freezing UI
                     Toast.makeText(context, "Saved successfully", Toast.LENGTH_LONG).show()
                     val imageBitmap = graphicsLayer.toImageBitmap() //a suspend function to render image object
                     val bitmap = imageBitmap.asAndroidBitmap()
                     saveImage(bitmap,context)
                 } },
-                    colors= ButtonDefaults.buttonColors(contentColor = if(viewMode) {Color.White} else {Color.Black}, containerColor = if(viewMode) {Color.Black} else {Color.White} ),modifier = Modifier.height(37.dp)){
+                    colors= ButtonDefaults.buttonColors(contentColor = if(viewMode) {Color.White} else {Color.Black}, containerColor = if(viewMode) {Color.Black} else {Color.White} )){
                     Text(
                         text = "SAVE",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp,
-                        modifier = Modifier.padding(start=20.dp,end=20.dp)
+                        fontSize = AdaptiveSp(15f),
+                        textAlign = TextAlign.Center
                     )
                 }
-                Button( onClick={ scope.launch{
+                Button( modifier=Modifier.weight(1f).height(AdaptiveDp(30f)), onClick={ scope.launch{
                     Toast.makeText(context,"Exported successfully",Toast.LENGTH_LONG).show()
                     val imageBitmap = graphicsLayer.toImageBitmap()
                     val bitmap = imageBitmap.asAndroidBitmap()
                     exportImage(bitmap,context)
                 } },
-                    colors= ButtonDefaults.buttonColors(contentColor = if(viewMode) {Color.White} else {Color.Black}, containerColor = if(viewMode) {Color.Black} else {Color.White} ),modifier = Modifier.height(37.dp)){
+                    colors= ButtonDefaults.buttonColors(contentColor = if(viewMode) {Color.White} else {Color.Black}, containerColor = if(viewMode) {Color.Black} else {Color.White} )){
                     Text(
                         text = "EXPORT",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp,
-                        modifier = Modifier.padding(start=20.dp,end=20.dp)
+                        fontSize = AdaptiveSp(15f),
+                        textAlign = TextAlign.Center
                     )
                 }
+                Spacer(modifier=Modifier.height(2.dp))
             }
             Spacer(modifier = Modifier.height(10.dp))
             Box {
@@ -1053,7 +1269,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                 ) {
                     Text(
                         text = "BACKGROUND COLOR",
-                        fontSize = 20.sp,
+                        fontSize = AdaptiveSp(18f),
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1091,7 +1307,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                 ) {
                     Text(
                         text = "ADD TEXT",
-                        fontSize = 20.sp,
+                        fontSize = AdaptiveSp(18f),
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1121,7 +1337,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                     ) {
                         Text(
                             text = "DONE",
-                            fontSize = 20.sp,
+                            fontSize = AdaptiveSp(18f),
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -1132,7 +1348,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                     Box{
                         Button(onClick = {extend1=true}, colors = ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.White} else {Color.Black}, contentColor = if (viewMode){Color.Black} else {Color.White})){
                             Text(text="TEXT STYLE",
-                                fontSize=20.sp)
+                                fontSize=AdaptiveSp(18f))
                         }
                         DropdownMenu(expanded=extend1, onDismissRequest = {extend1=false}) {
                             textStyles.forEach {
@@ -1159,7 +1375,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                     Box{
                         Button(onClick = {extend2=true}, colors = ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.White} else {Color.Black}, contentColor = if (viewMode){Color.Black} else {Color.White})){
                             Text(text="TEXT COLOR",
-                                fontSize = 20.sp)
+                                fontSize = AdaptiveSp(18f))
                         }
                         DropdownMenu(expanded=extend2, onDismissRequest = {extend2=false}) {
                             textColors.forEach {
@@ -1199,7 +1415,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                                 color = if (viewMode){Color.Black} else {Color.White},
                                 shape = RoundedCornerShape(12.dp)
                             ).align(Alignment.Start),
-                        fontSize = 20.sp,
+                        fontSize = AdaptiveSp(18f),
                         fontWeight = FontWeight.Bold,
                         color = if (viewMode){Color.White} else {Color.Black}
                     )
@@ -1219,7 +1435,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
                                 contentScale = ContentScale.Crop,
 
                                 modifier = Modifier
-                                    .size(100.dp)
+                                    .size(AdaptiveDp(80f))
 
                                     .border(
                                         width =
@@ -1263,7 +1479,7 @@ fun SecondScreen(selectedLayoutT: LayoutT,modifier: Modifier=Modifier, navContro
 
                             Text(
                                 text = "DONE",
-                                fontSize = 20.sp,
+                                fontSize = AdaptiveSp(18f),
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -1283,15 +1499,17 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
             Column(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(start=16.dp,end=16.dp,top=40.dp,bottom=40.dp).verticalScroll(rememberScrollState())
+                modifier = Modifier.padding(start=AdaptiveDp(16f),end=AdaptiveDp(16f),top=AdaptiveDp(40f),bottom=AdaptiveDp(40f)).verticalScroll(rememberScrollState())
             ) {
                 Spacer(modifier = Modifier.height(20.dp))
-                Row(modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(color= if (viewMode){Color.White} else {Color.Black}).height(45.dp), horizontalArrangement = Arrangement.spacedBy(60.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(color= if (viewMode){Color.White} else {Color.Black}).height(45.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "GALLERY",
                         color = if (viewMode){Color.Black} else {Color.White},
-                        fontSize = 35.sp,
+                        fontSize = AdaptiveSp(30f),
                         fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(start = 4.dp)
                     )
                     Button(onClick={changeView()
@@ -1301,19 +1519,37 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                                    }, colors = ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.Black} else {Color.White}, contentColor = if (viewMode){Color.White} else {Color.Black})){
                         Text(
                             text = if (viewMode) "LIGHT MODE" else "DARK MODE",
-                            fontSize =10.sp,
+                            fontSize =AdaptiveSp(10f),
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
+                Spacer(modifier = Modifier.height(14.dp))
+                Row(
+                        horizontalArrangement = Arrangement.Absolute.Center,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().height(AdaptiveDp(40f)).clip(RoundedCornerShape(12.dp))
+                    .background(color = if (viewMode) Color.White else Color.Black).padding(AdaptiveDp(5f)).clickable{
+                        navController.navigate("savedpics")
+                    }
+                ) {
+                Text(
+                    text = "SAVED IMAGES",
+                    color = if (viewMode) Color.Black else Color.White,
+                    fontSize = AdaptiveSp(20f),
+                    fontWeight = FontWeight.Bold
+                )}
 
-                Spacer(modifier = Modifier.height(16.dp))
+
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "CHOOSE LAYOUT",
                     color = if (viewMode){Color.White} else {Color.Black},
-                    fontSize = 35.sp,
+                    fontSize = AdaptiveSp(30f),
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.Start)
+                    modifier = Modifier.align(Alignment.Start),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Row(horizontalArrangement = Arrangement.Absolute.Center, verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(40.dp).clip(shape = RoundedCornerShape(10.dp)).background(color = if (viewMode) Color.White else Color.Black).
@@ -1322,7 +1558,7 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                 }){
                     Text(
                         text = "SCRAPBOOK MODE",
-                        fontSize = 25.sp,
+                        fontSize = AdaptiveSp(24f),
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Cursive,
                         color = if(viewMode)Color.Black else Color.White
@@ -1330,273 +1566,434 @@ fun ScreenHome(navController: NavController, selectedLayout:LayoutT?, layoutSele
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "2 GRID",
                         color = if (viewMode){Color.Black} else {Color.White},
-                        fontSize = 32.sp,
+                        fontSize = AdaptiveSp(24f),
+                        textAlign = TextAlign.Center,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.background(
+                        modifier = Modifier.weight(1f).background(
                             color = if (viewMode){Color.White} else {Color.Black},
                             shape = RoundedCornerShape(12.dp)
-                        ).padding(start = 26.dp, end = 40.dp)
+                        ).padding(vertical=4.dp)
                     )
                     Text(
                         text = "3 GRID",
                         color = if (viewMode){Color.Black} else {Color.White},
-                        fontSize = 32.sp,
+                        fontSize = AdaptiveSp(24f),
+                        textAlign = TextAlign.Center,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.background(
+                        modifier = Modifier.weight(1f).background(
                             color = if (viewMode){Color.White} else {Color.Black},
                             shape = RoundedCornerShape(12.dp)
-                        ).padding(start = 20.dp, end = 40.dp)
+                        ).padding(vertical=4.dp)
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(15.dp),
-                    modifier = Modifier.fillMaxWidth() //fill maximum width of parent column
-                ) {
-                    Box(
-                        modifier = Modifier.weight(1f).height(240.dp).border( //divide width equally cuz of two 1f
-                            width = if (selectedLayout == LayoutT.TWO_GRID) {
-                                5.dp
-                            } else {
-                                0.dp
-                            }, color = if (selectedLayout == LayoutT.TWO_GRID) {
-                                Color.Blue
-                            } else {
-                                Color.Transparent
-                            }, shape = RoundedCornerShape(7.dp)
-                        ).clip(RoundedCornerShape(10.dp)).background(color = if (viewMode){Color.Black} else {Color.White})
-                            .clickable { layoutSelection(
-                                LayoutT.TWO_GRID
-                            )}) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.fillMaxSize() //fill maximum size of parent box...height, width taken care by parent
-                        ) {
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).height(240.dp)
-                            ) {
-
-                            }
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).height(240.dp)
-                            ) {
-
-                            }
-                        }
-                    }
-                    Box(
-                        modifier = Modifier.weight(1f).height(240.dp).border(
-                            width = if (selectedLayout == LayoutT.THREE_GRID) {
-                                5.dp
-                            } else {
-                                0.dp
-                            }, color = if (selectedLayout == LayoutT.THREE_GRID) {
-                                Color.Blue
-                            } else {
-                                Color.Transparent
-                            }, shape = RoundedCornerShape(7.dp)
-                        ).clip(RoundedCornerShape(10.dp)).background(color = if (viewMode){Color.Black} else {Color.White})
-                            .clickable { layoutSelection(
-                                LayoutT.THREE_GRID
-                            ) }) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).height(240.dp)
-
-                            ) {
-
-                            }
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.Black} else {Color.White}).height(240.dp)
-
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(5.dp),modifier = Modifier.fillMaxSize()) {
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).fillMaxWidth()
-
-                                    ) {
-
-                                    }
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black}).fillMaxWidth()
-                                    ) {
-
-                                    }
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val newHeight = (maxWidth*0.6f)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth() //fill maximum width of parent column
+                    ) {
+                        Box(
+                            modifier = Modifier.weight(1f).height(newHeight)
+                                .border( //divide width equally cuz of two 1f
+                                    width = if (selectedLayout == LayoutT.TWO_GRID) {
+                                        5.dp
+                                    } else {
+                                        0.dp
+                                    }, color = if (selectedLayout == LayoutT.TWO_GRID) {
+                                        Color.Blue
+                                    } else {
+                                        Color.Transparent
+                                    }, shape = RoundedCornerShape(7.dp)
+                                ).clip(RoundedCornerShape(10.dp)).background(
+                                color = if (viewMode) {
+                                    Color.Black
+                                } else {
+                                    Color.White
                                 }
+                            )
+                                .clickable {
+                                    layoutSelection(
+                                        LayoutT.TWO_GRID
+                                    )
+                                }) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier.fillMaxSize() //fill maximum size of parent box...height, width taken care by parent
+                            ) {
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.White
+                                        } else {
+                                            Color.Black
+                                        }
+                                    ).fillMaxHeight()
+                                ) {
 
+                                }
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.White
+                                        } else {
+                                            Color.Black
+                                        }
+                                    ).fillMaxHeight()
+                                ) {
+
+                                }
                             }
+                        }
+                        Box(
+                            modifier = Modifier.weight(1f).height(newHeight).border(
+                                width = if (selectedLayout == LayoutT.THREE_GRID) {
+                                    5.dp
+                                } else {
+                                    0.dp
+                                }, color = if (selectedLayout == LayoutT.THREE_GRID) {
+                                    Color.Blue
+                                } else {
+                                    Color.Transparent
+                                }, shape = RoundedCornerShape(7.dp)
+                            ).clip(RoundedCornerShape(10.dp)).background(
+                                color = if (viewMode) {
+                                    Color.Black
+                                } else {
+                                    Color.White
+                                }
+                            )
+                                .clickable {
+                                    layoutSelection(
+                                        LayoutT.THREE_GRID
+                                    )
+                                }) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.White
+                                        } else {
+                                            Color.Black
+                                        }
+                                    ).height(newHeight)
+
+                                ) {
+
+                                }
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).height(newHeight)
+
+                                ) {
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                                        modifier = Modifier.fillMaxSize()
+                                    ) {
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            ).fillMaxWidth()
+
+                                        ) {
+
+                                        }
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            ).fillMaxWidth()
+                                        ) {
+
+                                        }
+                                    }
+
+                                }
+                            }
+
                         }
 
                     }
-
                 }
                 Spacer(modifier = Modifier.height(15.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
+
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         text = "4 GRID",
                         color = if (viewMode){Color.Black} else {Color.White},
-                        fontSize = 32.sp,
+                        fontSize = AdaptiveSp(24f),
+                        textAlign = TextAlign.Center,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.background(
+                        modifier = Modifier.weight(1f).background(
                             color = if (viewMode){Color.White} else {Color.Black},
                             shape = RoundedCornerShape(12.dp)
-                        ).padding(start = 26.dp, end = 40.dp)
+                        ).padding(vertical=4.dp)
                     )
                     Text(
                         text = "5 GRID",
                         color = if (viewMode){Color.Black} else {Color.White},
-                        fontSize = 32.sp,
+                        fontSize = AdaptiveSp(24f),
+                        textAlign = TextAlign.Center,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.background(
+                        modifier = Modifier.weight(1f).background(
                             color = if (viewMode){Color.White} else {Color.Black},
                             shape = RoundedCornerShape(12.dp)
-                        ).padding(start = 20.dp, end = 40.dp)
+                        ).padding(vertical=4.dp)
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(15.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Box(
-                        modifier = Modifier.weight(1f).height(240.dp).border(
-                            width = if (selectedLayout == LayoutT.FOUR_GRID) {
-                                5.dp
-                            } else {
-                                0.dp
-                            }, color = if (selectedLayout == LayoutT.FOUR_GRID) {
-                                Color.Blue
-                            } else {
-                                Color.Transparent
-                            }, shape = RoundedCornerShape(7.dp)
-                        ).clip(RoundedCornerShape(10.dp)).background(color = if (viewMode){Color.Black} else {Color.White})
-                            .clickable { layoutSelection(
-                                LayoutT.FOUR_GRID
-                            ) }) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.Black} else {Color.White}).height(240.dp)
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val newHeight = maxWidth*0.6f
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Box(
+                            modifier = Modifier.weight(1f).height(newHeight).border(
+                                width = if (selectedLayout == LayoutT.FOUR_GRID) {
+                                    5.dp
+                                } else {
+                                    0.dp
+                                }, color = if (selectedLayout == LayoutT.FOUR_GRID) {
+                                    Color.Blue
+                                } else {
+                                    Color.Transparent
+                                }, shape = RoundedCornerShape(7.dp)
+                            ).clip(RoundedCornerShape(10.dp)).background(
+                                color = if (viewMode) {
+                                    Color.Black
+                                } else {
+                                    Color.White
+                                }
+                            )
+                                .clickable {
+                                    layoutSelection(
+                                        LayoutT.FOUR_GRID
+                                    )
+                                }) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                modifier = Modifier.fillMaxSize()
                             ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).height(newHeight)
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
-                                    }
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                        }
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
+                                        }
                                     }
                                 }
-                            }
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.Black} else {Color.White}).height(240.dp)
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).fillMaxHeight()
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
-                                    }
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                        }
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    Box(
-                        modifier = Modifier.weight(1f).height(240.dp).border(
-                            width = if (selectedLayout == LayoutT.FIVE_GRID) {
-                                5.dp
-                            } else {
-                                0.dp
-                            }, color = if (selectedLayout == LayoutT.FIVE_GRID) {
-                                Color.Blue
-                            } else {
-                                Color.Transparent
-                            }, shape = RoundedCornerShape(7.dp)
-                        ).clip(RoundedCornerShape(10.dp)).background(color = if (viewMode){Color.Black} else {Color.White})
-                            .clickable { layoutSelection(
-                                LayoutT.FIVE_GRID
-                            ) }) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.Black} else {Color.White}).height(240.dp)
-                                    .fillMaxWidth()
+                        Box(
+                            modifier = Modifier.weight(1f).height(newHeight).border(
+                                width = if (selectedLayout == LayoutT.FIVE_GRID) {
+                                    5.dp
+                                } else {
+                                    0.dp
+                                }, color = if (selectedLayout == LayoutT.FIVE_GRID) {
+                                    Color.Blue
+                                } else {
+                                    Color.Transparent
+                                }, shape = RoundedCornerShape(7.dp)
+                            ).clip(RoundedCornerShape(10.dp)).background(
+                                color = if (viewMode) {
+                                    Color.Black
+                                } else {
+                                    Color.White
+                                }
+                            )
+                                .clickable {
+                                    layoutSelection(
+                                        LayoutT.FIVE_GRID
+                                    )
+                                }) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.fillMaxSize()
                             ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).height(newHeight)
+                                        .fillMaxWidth()
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
-                                    }
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                        }
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
-                                    }
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                        }
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
+                                        }
                                     }
                                 }
-                            }
-                            Box(
-                                Modifier.weight(1f).background(color = if (viewMode){Color.Black} else {Color.White}).height(240.dp)
-                                    .fillMaxWidth()
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                Box(
+                                    Modifier.weight(1f).background(
+                                        color = if (viewMode) {
+                                            Color.Black
+                                        } else {
+                                            Color.White
+                                        }
+                                    ).fillMaxHeight()
+                                        .fillMaxWidth()
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
-                                    }
-                                    Box(
-                                        Modifier.weight(1f).background(color = if (viewMode){Color.White} else {Color.Black})
-                                            .height(120.dp).fillMaxWidth()
-                                    ) {
+                                        }
+                                        Box(
+                                            Modifier.weight(1f).background(
+                                                color = if (viewMode) {
+                                                    Color.White
+                                                } else {
+                                                    Color.Black
+                                                }
+                                            )
+                                                .height(newHeight/2).fillMaxWidth()
+                                        ) {
 
+                                        }
                                     }
+
                                 }
-
                             }
+
                         }
 
                     }
-
                 }
                 Spacer( modifier = Modifier.height(15.dp))
                 if (selectedLayout != null){
                     Button(onClick = {navController.navigate("editor")},modifier = Modifier.padding(bottom=20.dp),colors= ButtonDefaults.buttonColors(containerColor = if (viewMode){Color.White} else {Color.Black}, contentColor = if (viewMode){Color.Black} else {Color.White})){
                         Text(
                             text = "NEXT",
-                            fontSize = 37.sp,
+                            fontSize = AdaptiveSp(25f),
                             modifier = Modifier.background(color = if (viewMode){Color.White} else {Color.Black}, shape = RoundedCornerShape(12.dp)),
                             fontWeight = FontWeight.Bold
                         )
@@ -1624,6 +2021,11 @@ fun GreetingPreview() {
         var bgColour by remember{
             mutableStateOf(if(viewMode)Color.White else Color.Black)
         }
-        ScrapbookScreen(viewMode = viewMode, navController = navController)
+        ScreenHome(
+            navController=navController, selectedLayout=selectedLayout, layoutSelection = {layout -> selectedLayout = layout}, viewMode = viewMode, changeView = { viewMode = !viewMode},bgColour = bgColour,
+            colorChange = {newcolor ->
+               bgColour = newcolor
+            }
+        )
     }
 }
